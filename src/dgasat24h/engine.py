@@ -102,12 +102,14 @@ def consulta_multi(s, batch, desde, hasta):
 
 
 def worker(batch, desde, hasta, reintentos=4):
-    s = nueva_sesion()
+    s = None
     err = ""
     for i in range(reintentos):
         try:
-            regs, _ = consulta_multi(s, batch, desde, hasta)
-            return regs, None
+            if s is None:
+                s = nueva_sesion()      # crear sesion DENTRO del try: si el GET
+            regs, _ = consulta_multi(s, batch, desde, hasta)  # inicial hace
+            return regs, None           # timeout, reintenta en vez de crashear
         except BackendError as e:
             # backend 500 determinista: una estacion del lote lo gatilla.
             # Aislar consultando de a 1 para rescatar las sanas.
@@ -122,6 +124,6 @@ def worker(batch, desde, hasta, reintentos=4):
             return [], str(e)
         except requests.RequestException as e:
             time.sleep(3 * (i + 1))
-            s = nueva_sesion()
+            s = None                    # recrear sesion en el proximo intento
             err = str(e)
     return [], f"red: {err}"
