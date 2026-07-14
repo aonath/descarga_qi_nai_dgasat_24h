@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+env/
+
+# Salida de ejecucion
+salida_dgasat_24h/
+datos_24h/
+*.log
+
+# Sistema
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

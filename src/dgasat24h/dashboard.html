@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DGASAT · Fluviométricas · últimas 24 h</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --fg:#e6edf3;
+    --muted:#8b949e; --q:#58a6ff; --na:#3fb950; --accent:#f0883e; --err:#f85149;
+    --rojo:#f85149; --amar:#e3b341; --azul:#58a6ff;
+  }
+  @media (prefers-color-scheme: light){
+    :root{--bg:#f6f8fa;--panel:#fff;--border:#d0d7de;--fg:#1f2328;
+      --muted:#636c76;--q:#0969da;--na:#1a7f37;--accent:#bc4c00;--err:#cf222e;
+      --rojo:#cf222e;--amar:#9a6700;--azul:#0969da;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:14px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  header{padding:18px 22px;border-bottom:1px solid var(--border);
+    display:flex;flex-wrap:wrap;gap:14px;align-items:baseline}
+  h1{font-size:18px;margin:0;font-weight:650}
+  .meta{color:var(--muted);font-size:12.5px}
+  .wrap{padding:18px 22px;max-width:1400px;margin:0 auto}
+  .kpis{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .kpi{background:var(--panel);border:1px solid var(--border);border-radius:10px;
+    padding:12px 16px;min-width:120px}
+  .kpi .n{font-size:22px;font-weight:680}
+  .kpi .l{color:var(--muted);font-size:12px}
+
+  #proc{background:var(--panel);border:1px solid var(--border);border-radius:12px;
+    padding:16px 18px;margin-bottom:16px}
+  .prow{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+  .spin{width:15px;height:15px;border:2px solid var(--border);
+    border-top-color:var(--accent);border-radius:50%;animation:sp .8s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .ptitle{font-weight:620}
+  .bar{height:9px;background:var(--border);border-radius:6px;overflow:hidden}
+  .bar > i{display:block;height:100%;width:0;background:var(--accent);
+    border-radius:6px;transition:width .3s}
+  .pstat{color:var(--muted);font-size:12.5px;margin-top:8px;
+    display:flex;gap:16px;flex-wrap:wrap}
+  .pstat b{color:var(--fg)}
+  .log{margin-top:12px;max-height:170px;overflow:auto;font:11.5px/1.5
+    ui-monospace,SFMono-Regular,Consolas,monospace;
+    border-top:1px solid var(--border);padding-top:8px}
+  .log .li{display:flex;gap:10px;white-space:nowrap}
+  .log .tm{color:var(--muted)}
+  .log .ok{color:var(--na)} .log .ko{color:var(--err)}
+  .log .tag{color:var(--muted)}
+
+  .controls{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+  input,select{background:var(--panel);color:var(--fg);border:1px solid var(--border);
+    border-radius:8px;padding:7px 10px;font-size:13px}
+  input[type=search]{min-width:240px}
+  .legend{display:flex;gap:14px;color:var(--muted);font-size:12px;margin-left:auto}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;
+    vertical-align:middle}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;
+    padding:14px 15px 10px;position:relative}
+  .card h3{margin:0 0 2px;font-size:14px;font-weight:620;line-height:1.3;padding-right:74px}
+  .card .sub{color:var(--muted);font-size:11.5px;margin-bottom:10px}
+  .riesgo{position:absolute;top:13px;right:14px;font-size:10.5px;font-weight:650;
+    border-radius:20px;padding:2px 9px;border:1px solid transparent}
+  .r-Rojo{background:var(--rojo);color:#fff}
+  .r-Amarillo{background:var(--amar);color:#fff}
+  .r-Azul{background:var(--azul);color:#fff}
+  .r-none{color:var(--muted);border-color:var(--border)}
+  .vals{display:flex;gap:16px;margin-bottom:8px}
+  .val{font-size:13px}
+  .val b{font-size:19px;font-weight:680}
+  .val .u{color:var(--muted);font-size:11px}
+  .q b{color:var(--q)} .na b{color:var(--na)}
+  svg{display:block;width:100%;height:120px;overflow:visible}
+  .axis{fill:var(--muted);font-size:9px}
+  .empty{color:var(--muted);text-align:center;padding:40px}
+  .nodata{color:var(--muted);font-size:12px;padding:8px 0}
+  .tag{font-size:10.5px;color:var(--muted);border:1px solid var(--border);
+    border-radius:20px;padding:1px 8px}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>DGASAT · Estaciones fluviométricas · últimas 24 h</h1>
+  <span class="meta" id="meta"></span>
+</header>
+<div class="wrap">
+
+  <div id="proc" class="hidden">
+    <div class="prow">
+      <span class="spin" id="spin"></span>
+      <span class="ptitle" id="ptitle">Descargando…</span>
+    </div>
+    <div class="bar"><i id="barfill"></i></div>
+    <div class="pstat" id="pstat"></div>
+    <div class="log" id="log"></div>
+  </div>
+
+  <div id="dataview" class="hidden">
+    <div class="kpis" id="kpis"></div>
+    <div class="controls">
+      <input type="search" id="q" placeholder="Buscar estación o código…">
+      <select id="region"></select>
+      <select id="riesgo"></select>
+      <select id="orden">
+        <option value="reg">Orden: región</option>
+        <option value="q">Orden: caudal ↓</option>
+        <option value="na">Orden: nivel ↓</option>
+        <option value="nombre">Orden: nombre</option>
+      </select>
+      <span class="legend">
+        <span><span class="dot" style="background:var(--q)"></span>Q.i caudal (m³/s)</span>
+        <span><span class="dot" style="background:var(--na)"></span>NA.i nivel (m)</span>
+      </span>
+    </div>
+    <div class="grid" id="grid"></div>
+  </div>
+
+</div>
+<script>
+const EMBED = __EMBED__;   // payload embebido (modo estatico) o null (modo servidor)
+const $ = s => document.querySelector(s);
+let DATA = null;
+const RIESGOS = ['Rojo','Amarillo','Azul','Sin riesgo','Sin umbral'];
+
+function fmt(x,d=2){return x==null?'—':x.toLocaleString('es-CL',{maximumFractionDigits:d})}
+function getVar(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
+
+/* ---------- progreso en vivo ---------- */
+function renderProgreso(p){
+  $('#proc').classList.remove('hidden');
+  const total = p.total||0, done = p.done||0;
+  const pct = total? Math.round(done/total*100):0;
+  $('#barfill').style.width = pct+'%';
+  $('#meta').textContent = `${p.desde} → ${p.hasta}`;
+  const listo = p.status==='listo';
+  $('#spin').classList.toggle('hidden', listo);
+  $('#ptitle').textContent = listo
+    ? `Descarga completa · ${done}/${total} lotes`
+    : `Descargando… ${done}/${total} lotes (${pct}%)`;
+  $('#pstat').innerHTML =
+    `<span><b>${p.registros||0}</b> registros</span>`+
+    `<span><b>${p.errores||0}</b> errores</span>`+
+    `<span><b>${p.elapsed||0}</b> s</span>`+
+    (listo?`<span><b>${p.series||0}</b> series con datos</span>`:'');
+  const log = (p.log||[]).slice(-60).reverse().map(l=>
+    `<div class="li"><span class="tm">${l.t}</span>`+
+    `<span class="tag">${l.tag}</span>`+
+    (l.err?`<span class="ko">✗ ${l.err}</span>`
+          :`<span class="ok">✓ ${l.n} reg</span>`)+`</div>`).join('');
+  $('#log').innerHTML = log;
+}
+
+async function poll(){
+  try{
+    const p = await (await fetch('progress.json?_='+Date.now())).json();
+    renderProgreso(p);
+    if(p.status==='listo'){
+      const d = await (await fetch('data.json?_='+Date.now())).json();
+      mostrarDatos(d);
+      setTimeout(()=>$('#proc').classList.add('hidden'), 4000);
+      return;
+    }
+  }catch(e){/* progress.json aun no existe */}
+  setTimeout(poll, 1000);
+}
+
+/* ---------- vista de datos ---------- */
+function mostrarDatos(d){
+  DATA = d;
+  $('#dataview').classList.remove('hidden');
+  $('#meta').textContent = `${d.desde} → ${d.hasta} · generado ${d.generado}`;
+  const est = d.estaciones;
+  const kpi=(n,l)=>`<div class="kpi"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+  const cuenta = r => est.filter(e=>e.riesgo===r).length;
+  $('#kpis').innerHTML =
+    kpi(d.n_estaciones,'estaciones') +
+    kpi(cuenta('Rojo'),'🔴 Rojo') +
+    kpi(cuenta('Amarillo'),'🟡 Amarillo') +
+    kpi(cuenta('Azul'),'🔵 Azul') +
+    kpi(new Set(est.map(e=>e.region)).size,'regiones');
+  const regs=[...new Set(est.map(e=>e.region))].sort((a,b)=>a-b);
+  $('#region').innerHTML = `<option value="">Todas las regiones</option>`+
+    regs.map(r=>`<option value="${r}">Región ${r}</option>`).join('');
+  $('#riesgo').innerHTML = `<option value="">Todos los riesgos</option>`+
+    RIESGOS.filter(r=>cuenta(r)).map(r=>`<option value="${r}">${r} (${cuenta(r)})</option>`).join('');
+  ['#q','#region','#riesgo','#orden'].forEach(s=>$(s).addEventListener('input',render));
+  render();
+}
+
+function sparkline(serie,color){
+  if(!serie||serie.length<2){return '<div class="nodata">sin serie</div>'}
+  const W=310,H=120,P=18;
+  const vs=serie.map(p=>p.v);
+  let mn=Math.min(...vs),mx=Math.max(...vs);
+  if(mn===mx){mn-=1;mx+=1}
+  const n=serie.length;
+  const x=i=>P+(i/(n-1))*(W-P-6);
+  const y=v=>H-P-((v-mn)/(mx-mn))*(H-2*P);
+  let d='';
+  serie.forEach((p,i)=>{d+=(i?'L':'M')+x(i).toFixed(1)+' '+y(p.v).toFixed(1)+' '});
+  const area=d+`L ${x(n-1).toFixed(1)} ${H-P} L ${x(0).toFixed(1)} ${H-P} Z`;
+  const gid='g'+Math.random().toString(36).slice(2,8);
+  const last=serie[serie.length-1];
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+    <defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="${color}" stop-opacity=".25"/>
+      <stop offset="1" stop-color="${color}" stop-opacity="0"/>
+    </linearGradient></defs>
+    <path d="${area}" fill="url(#${gid})"/>
+    <path d="${d}" fill="none" stroke="${color}" stroke-width="1.8"
+      stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${x(n-1).toFixed(1)}" cy="${y(last.v).toFixed(1)}" r="3" fill="${color}"/>
+    <text class="axis" x="${P}" y="11">${fmt(mx)}</text>
+    <text class="axis" x="${P}" y="${H-4}">${fmt(mn)}</text>
+    <text class="axis" x="${W-4}" y="${H-4}" text-anchor="end">${last.t.slice(-5)}</text>
+  </svg>`;
+}
+
+function card(e){
+  const q=e['ultimo_Q.i'], na=e['ultimo_NA.i'];
+  const sq=e.series['Q.i'], sna=e.series['NA.i'];
+  const rk=e.riesgo||'Sin umbral';
+  const cls={'Rojo':'r-Rojo','Amarillo':'r-Amarillo','Azul':'r-Azul'}[rk]||'r-none';
+  return `<div class="card">
+    <span class="riesgo ${cls}">${rk}</span>
+    <h3>${e.estacion||e.codigo}</h3>
+    <div class="sub">${e.codigo} · <span class="tag">Región ${e.region}</span></div>
+    <div class="vals">
+      <div class="val q">Q.i <b>${fmt(q&&q.v)}</b> <span class="u">m³/s</span></div>
+      <div class="val na">NA.i <b>${fmt(na&&na.v)}</b> <span class="u">m</span></div>
+    </div>
+    ${sq?sparkline(sq,getVar('--q')):''}
+    ${sna?sparkline(sna,getVar('--na')):''}
+    ${(!sq&&!sna)?'<div class="nodata">sin datos en la ventana</div>':''}
+  </div>`;
+}
+
+function render(){
+  const est=DATA.estaciones;
+  const term=$('#q').value.toLowerCase().trim();
+  const reg=$('#region').value;
+  const rk=$('#riesgo').value;
+  const ord=$('#orden').value;
+  let list=est.filter(e=>{
+    if(reg && String(e.region)!==reg) return false;
+    if(rk && e.riesgo!==rk) return false;
+    if(term){const h=(e.estacion||'')+' '+e.codigo;
+      if(!h.toLowerCase().includes(term)) return false;}
+    return true;
+  });
+  const lv=(e,v)=>{const u=e['ultimo_'+v];return u&&u.v!=null?u.v:-Infinity};
+  const pr={'Rojo':0,'Amarillo':1,'Azul':2,'Sin riesgo':3,'Sin umbral':4};
+  if(ord==='q') list.sort((a,b)=>lv(b,'Q.i')-lv(a,'Q.i'));
+  else if(ord==='na') list.sort((a,b)=>lv(b,'NA.i')-lv(a,'NA.i'));
+  else if(ord==='nombre') list.sort((a,b)=>(a.estacion||'').localeCompare(b.estacion||''));
+  else list.sort((a,b)=>(a.region-b.region)||(a.estacion||'').localeCompare(b.estacion||''));
+  $('#grid').innerHTML = list.length
+    ? list.map(card).join('')
+    : '<div class="empty">Sin estaciones para el filtro.</div>';
+}
+
+/* ---------- arranque ---------- */
+if(EMBED){ mostrarDatos(EMBED); }   // modo estatico (--no-serve)
+else { poll(); }                    // modo servidor: sigue el proceso en vivo
+</script>
+</body>
+</html>

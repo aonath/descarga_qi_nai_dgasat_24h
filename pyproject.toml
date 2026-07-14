@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dgasat24h"
+version = "1.0.0"
+description = "Descarga DGASAT: ultimas 24 h de caudal (Q.i) y nivel (NA.i) de estaciones fluviometricas de la DGA, con dashboard en vivo y reporte de riesgo de inundacion."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "DGA descarga" }]
+dependencies = [
+    "requests>=2.28",
+    "urllib3>=1.26",
+    "openpyxl>=3.1",
+    "pandas>=1.5",
+]
+
+[project.scripts]
+download_dgasat_24h = "dgasat24h.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dgasat24h = ["dashboard.html", "data/*.xlsx"]
