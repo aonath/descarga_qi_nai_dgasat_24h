@@ -86,6 +86,12 @@ En **Windows** también puedes hacer **doble clic en `run.bat`**.
 | `--no-serve` | No abrir navegador; deja un `dashboard.html` autónomo. |
 | `--no-riesgo` | No generar el Excel de riesgo. |
 | `--port 8899` | Cambiar el puerto del servidor local. |
+| `--full` | Ignorar la caché y descargar la ventana completa. |
+
+**¿Más rápido con menos horas?** Sí. `--horas 12` o `--horas 6` bajan menos
+datos (suelen caer en un solo día) y terminan antes. `--horas 24` es lo
+completo. Si el sitio de la DGA está lento, una estación puede demorar un lote;
+usa **Pausar/Cancelar** (abajo).
 
 Ejemplos:
 
@@ -96,6 +102,31 @@ download_dgasat_24h --out "D:\reportes\dga"
 ```
 
 Toma unos **3–4 minutos** para todo Chile (~216 estaciones); segundos por región.
+
+### Detener, pausar o reanudar
+
+**Desde el dashboard** (mientras descarga): botones **⏸ Pausar**, **▶ Reanudar**
+y **■ Cancelar** en el panel de progreso. Cancelar guarda lo bajado hasta ese
+momento.
+
+**Desde la terminal** — en **otra** ventana, apuntando a la misma carpeta de
+salida:
+
+```
+download_dgasat_24h --pause     # pausa la descarga en curso
+download_dgasat_24h --resume    # la reanuda
+download_dgasat_24h --stop      # la cancela (guarda lo parcial)
+```
+
+**Atajo directo:** en la ventana de la descarga, **Ctrl+C** cancela y guarda lo
+descargado. Si no responde (sitio DGA colgado), cierra la ventana.
+
+### Descarga incremental (caché)
+
+Cada corrida guarda lo bajado en `salida_dgasat_24h/cache_qi_nai.csv`. La
+siguiente corrida **revisa la caché y descarga solo las horas que faltan** para
+completar la ventana; el resto lo reusa. Así, correr seguido es rápido. Usa
+`--full` para forzar la descarga completa e ignorar la caché.
 
 ---
 

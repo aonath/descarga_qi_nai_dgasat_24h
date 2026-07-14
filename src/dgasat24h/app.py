@@ -19,14 +19,17 @@ import argparse
 import csv
 import json
 import math
+import os
+import sys
 import threading
 import time
 import unicodedata
 import webbrowser
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (FIRST_COMPLETED, ThreadPoolExecutor, wait)
 from datetime import datetime, timedelta
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 from importlib.resources import files
 from itertools import groupby
 from pathlib import Path
@@ -131,7 +134,8 @@ class Progreso:
         self.lock = threading.Lock()
         self.t0 = time.time()
         self.state = dict(meta)
-        self.state.update({"status": "descargando", "done": 0, "registros": 0,
+        self.state.update({"status": "descargando", "control": "descargando",
+                           "cancelado": False, "done": 0, "registros": 0,
                            "errores": 0, "elapsed": 0, "log": []})
         self._flush()
 
@@ -151,41 +155,108 @@ class Progreso:
                                       "t": datetime.now().strftime("%H:%M:%S")})
             self._flush()
 
-    def finalizar(self, registros, series, errores):
+    def control(self, estado):
+        with self.lock:
+            if self.state.get("control") != estado:
+                self.state["control"] = estado
+                self._flush()
+
+    def finalizar(self, registros, series, errores, cancelado=False):
         with self.lock:
             self.state.update({"status": "listo", "registros": registros,
-                               "series": series, "errores": errores})
+                               "series": series, "errores": errores,
+                               "cancelado": cancelado, "control": "listo"})
             self._flush()
 
 
+# ------------------------------------------------------------ control (pausa/cancelar)
+CONTROL_NAME = "control.json"
+
+
+def leer_control(out):
+    """Comando actual: 'run' | 'pause' | 'cancel'. 'run' si no hay archivo."""
+    if out is None:
+        return "run"
+    try:
+        cmd = json.loads((out / CONTROL_NAME).read_text(encoding="utf-8")).get("cmd")
+        return cmd if cmd in ("run", "pause", "cancel") else "run"
+    except (OSError, ValueError):
+        return "run"
+
+
+def escribir_control(out, cmd):
+    (out / CONTROL_NAME).write_text(json.dumps({"cmd": cmd}), encoding="utf-8")
+
+
 # ------------------------------------------------------------ descarga
-def descargar(sel, desde, hasta, workers, prog):
+def descargar(sel, desde, hasta, workers, prog, out=None):
+    """Descarga por lotes con envio perezoso: permite pausar/reanudar/cancelar
+    consultando <out>/control.json entre lotes. Devuelve (todos, errores, cancelado)."""
     codes = sorted(sel)
     batches = [{c: sel[c] for c in codes[i:i + 3]}
                for i in range(0, len(codes), 3)]
     print(f"{len(sel)} estaciones fluviometricas, vars {list(VARS)}")
     print(f"{desde:%d/%m/%Y %H:%M} -> {hasta:%d/%m/%Y %H:%M}")
     print(f"{len(batches)} requests (3 est c/u), {workers} en paralelo\n")
+    if out is not None:
+        escribir_control(out, "run")          # limpiar estado previo
     todos, errores = [], []
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(worker, b, desde, hasta): b for b in batches}
-        for f in as_completed(futs):
-            b = futs[f]
-            regs, err = f.result()
-            tag = ",".join(b.keys())
-            if err:
-                errores.append((tag, err))
-                print(f"  [!] {tag}: {err}")
-            else:
-                print(f"  {tag}: {len(regs)} registros")
-            todos.extend(regs)
-            if prog:
-                prog.lote(tag, len(regs), err)
+    pend = list(batches)
+    running = {}                               # future -> batch
+    hechos = 0
+    cancelado = False
+    pausado_prev = None
+    # executor con hilos daemon: al cancelar no bloquea la salida esperando
+    # requests en vuelo (que pueden colgar minutos si el backend esta lento).
+    ex = ThreadPoolExecutor(max_workers=workers)
+    try:
+        while pend or running:
+            cmd = leer_control(out)
+            if cmd == "cancel":
+                cancelado = True
+                break
+            pausa = (cmd == "pause")
+            if prog and pausa != pausado_prev:
+                prog.control("pausado" if pausa else "descargando")
+                print("  [pausa] esperando reanudar..." if pausa else "  [reanudado]")
+                pausado_prev = pausa
+            if not pausa:
+                while len(running) < workers and pend:
+                    b = pend.pop(0)
+                    running[ex.submit(worker, b, desde, hasta)] = b
+            if not running:
+                time.sleep(0.4)                # pausado y sin nada corriendo
+                continue
+            done, _ = wait(list(running), timeout=0.5,
+                           return_when=FIRST_COMPLETED)
+            for fu in done:
+                b = running.pop(fu)
+                regs, err = fu.result()
+                hechos += 1
+                tag = ",".join(b.keys())
+                if err:
+                    errores.append((tag, err))
+                    print(f"  [!] {tag}: {err}")
+                else:
+                    print(f"  {tag}: {len(regs)} registros")
+                todos.extend(regs)
+                if prog:
+                    prog.lote(tag, len(regs), err)
+    except KeyboardInterrupt:
+        cancelado = True
+        print("\n  [Ctrl+C] cancelando, guardando lo descargado...")
+    finally:
+        # no esperar a los workers en vuelo: se abandonan (hilos daemon mueren
+        # con el proceso). cancel_futures descarta los que no arrancaron.
+        ex.shutdown(wait=False, cancel_futures=True)
+    if cancelado:
+        print(f"  Cancelado: {hechos}/{len(batches)} lotes completados "
+              f"(se descartan {len(pend)+len(running)} pendientes/en vuelo).")
     todos = [r for r in todos
              if desde <= datetime.strptime(r["fecha_hora"], "%d/%m/%Y %H:%M") <= hasta]
     todos.sort(key=lambda r: (r["codigo"], r["variable"],
                datetime.strptime(r["fecha_hora"], "%d/%m/%Y %H:%M")))
-    return todos, errores
+    return todos, errores, cancelado
 
 
 def _to_float(v):
@@ -205,6 +276,59 @@ def escribir_csv(todos, sel, out, ts):
             w.writerow([r["codigo"], nombres[r["codigo"]], r["variable"],
                         r["fecha_hora"], r["valor"]])
     return cons
+
+
+# ------------------------------------------------------------ cache incremental
+CACHE_NAME = "cache_qi_nai.csv"
+
+
+def _parse_fh(fh):
+    return datetime.strptime(fh, "%d/%m/%Y %H:%M")
+
+
+def cargar_cache(out):
+    """Registros previos {codigo, variable, fecha_hora, valor}. [] si no hay."""
+    fp = out / CACHE_NAME
+    if not fp.exists():
+        return []
+    regs = []
+    with open(fp, newline="", encoding="utf-8-sig") as f:
+        for r in csv.DictReader(f):
+            if r.get("fecha_hora") and r.get("codigo"):
+                regs.append({"codigo": r["codigo"], "variable": r["variable"],
+                             "fecha_hora": r["fecha_hora"], "valor": r["valor"]})
+    return regs
+
+
+def guardar_cache(out, todos):
+    fp = out / CACHE_NAME
+    tmp = fp.with_suffix(".tmp")
+    with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["codigo", "variable", "fecha_hora", "valor"])
+        for r in todos:
+            w.writerow([r["codigo"], r["variable"], r["fecha_hora"], r["valor"]])
+    tmp.replace(fp)
+
+
+def fusionar(cache, nuevos, desde, hasta):
+    """Une cache + nuevos, dedup por (codigo, variable, fecha_hora) priorizando
+    los nuevos, recorta a la ventana [desde, hasta] y ordena."""
+    idx = {}
+    for r in cache:
+        idx[(r["codigo"], r["variable"], r["fecha_hora"])] = r
+    for r in nuevos:                         # los nuevos pisan a los viejos
+        idx[(r["codigo"], r["variable"], r["fecha_hora"])] = r
+    out = []
+    for r in idx.values():
+        try:
+            t = _parse_fh(r["fecha_hora"])
+        except ValueError:
+            continue
+        if desde <= t <= hasta:
+            out.append(r)
+    out.sort(key=lambda r: (r["codigo"], r["variable"], _parse_fh(r["fecha_hora"])))
+    return out
 
 
 # ------------------------------------------------------------ payload dashboard
@@ -285,8 +409,30 @@ def escribir_riesgo(todos, sel, hasta, out_base, umb):
     return fp, df
 
 
+class _CtrlHandler(SimpleHTTPRequestHandler):
+    """Sirve archivos y ademas acepta GET /control?cmd=pause|run|cancel,
+    que escribe control.json en la carpeta servida."""
+
+    def do_GET(self):
+        if urlparse(self.path).path == "/control":
+            q = parse_qs(urlparse(self.path).query)
+            cmd = (q.get("cmd") or ["run"])[0]
+            if cmd in ("run", "pause", "cancel"):
+                escribir_control(Path(self.directory), cmd)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+            return
+        return super().do_GET()
+
+    def log_message(self, *args):
+        pass
+
+
 def _servir(out, port):
-    handler = partial(SimpleHTTPRequestHandler, directory=str(out))
+    handler = partial(_CtrlHandler, directory=str(out))
     httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     return httpd
@@ -308,7 +454,25 @@ def main(argv=None):
                     help="no abrir navegador (dashboard estatico embebido)")
     ap.add_argument("--no-riesgo", action="store_true",
                     help="no generar el xlsx de riesgo de inundacion")
+    ap.add_argument("--full", action="store_true",
+                    help="ignorar cache y descargar la ventana completa")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--stop", action="store_true",
+                   help="cancelar una descarga en curso (envia senal y sale)")
+    g.add_argument("--pause", action="store_true",
+                   help="pausar una descarga en curso (envia senal y sale)")
+    g.add_argument("--resume", action="store_true",
+                   help="reanudar una descarga pausada (envia senal y sale)")
     a = ap.parse_args(argv)
+
+    out = Path(a.out)
+    # senales de control a una instancia ya corriendo (otra terminal)
+    if a.stop or a.pause or a.resume:
+        cmd = "cancel" if a.stop else "pause" if a.pause else "run"
+        out.mkdir(parents=True, exist_ok=True)
+        escribir_control(out, cmd)
+        print(f"Senal '{cmd}' enviada a {out}")
+        return
 
     sel = leer_fluvio()
     if a.region is not None:
@@ -319,11 +483,28 @@ def main(argv=None):
 
     hasta = datetime.now()
     desde = hasta - timedelta(hours=a.horas)
-    out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     ts = hasta.strftime("%Y%m%d_%H%M")
     umb = _leer_umbrales()
     n_batches = (len(sel) + 2) // 3
+
+    # ---- descarga incremental: revisar cache y bajar solo lo faltante ----
+    codes_sel = set(sel)
+    cache = [] if a.full else cargar_cache(out)
+    cache = [r for r in cache
+             if r["codigo"] in codes_sel and desde <= _parse_fh(r["fecha_hora"]) <= hasta]
+    ult_cache = max((_parse_fh(r["fecha_hora"]) for r in cache), default=None)
+    if ult_cache is not None:
+        # ya hay datos en la ventana: bajar solo desde la ultima hora registrada
+        desde_dl = min(hasta, ult_cache + timedelta(minutes=1))
+        faltan_h = (hasta - desde_dl).total_seconds() / 3600
+        print(f"Cache: {len(cache)} registros en ventana, ultimo {ult_cache:%d/%m %H:%M}.")
+        print(f"Descargo solo lo faltante: {desde_dl:%d/%m %H:%M} -> {hasta:%H:%M} "
+              f"(~{faltan_h:.1f} h)\n")
+    else:
+        desde_dl = desde
+        if not a.full:
+            print("Cache: sin datos utiles en la ventana; descarga completa.\n")
     meta = {"generado": hasta.strftime("%d/%m/%Y %H:%M"),
             "desde": desde.strftime("%d/%m/%Y %H:%M"),
             "hasta": hasta.strftime("%d/%m/%Y %H:%M"),
@@ -332,7 +513,7 @@ def main(argv=None):
     serve = not a.no_serve
     prog = None
     if serve:
-        for f in ("progress.json", "data.json"):
+        for f in ("progress.json", "data.json", CONTROL_NAME):
             (out / f).unlink(missing_ok=True)
         escribir_dashboard(out)
         prog = Progreso(out, meta)
@@ -342,19 +523,26 @@ def main(argv=None):
         webbrowser.open(url)
 
     t0 = time.time()
-    todos, errores = descargar(sel, desde, hasta, a.workers, prog)
+    nuevos, errores, cancelado = descargar(sel, desde_dl, hasta, a.workers,
+                                           prog, out)
+    # fusionar lo nuevo con el cache y recortar a la ventana completa
+    todos = fusionar(cache, nuevos, desde, hasta)
+    guardar_cache(out, todos)
     cons = escribir_csv(todos, sel, out, ts)
     payload = construir_payload(todos, sel, desde, hasta, umb)
     con_datos = len({(r["codigo"], r["variable"]) for r in todos})
+    print(f"  (nuevos: {len(nuevos)} · cache: {len(cache)} · "
+          f"ventana total: {len(todos)})")
 
     if serve:
         (out / "data.json").write_text(
             json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        prog.finalizar(len(todos), con_datos, len(errores))
+        prog.finalizar(len(todos), con_datos, len(errores), cancelado)
     else:
         escribir_dashboard(out, payload)
 
-    print(f"\n{len(todos)} registros, {con_datos} series con datos, "
+    estado = "CANCELADA (parcial)" if cancelado else "completa"
+    print(f"\nDescarga {estado}: {len(todos)} registros, {con_datos} series, "
           f"{len(errores)} errores, {time.time()-t0:.0f}s")
     print(f"-> {cons}")
     print(f"-> {out / 'dashboard.html'}")
@@ -375,6 +563,11 @@ def main(argv=None):
                 time.sleep(1)
         except KeyboardInterrupt:
             print("\nListo.")
+    elif cancelado:
+        # requests en vuelo (hilos no-daemon) pueden colgar la salida: forzar.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 if __name__ == "__main__":

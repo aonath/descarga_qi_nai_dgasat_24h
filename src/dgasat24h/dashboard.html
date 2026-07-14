@@ -36,6 +36,12 @@
     border-top-color:var(--accent);border-radius:50%;animation:sp .8s linear infinite}
   @keyframes sp{to{transform:rotate(360deg)}}
   .ptitle{font-weight:620}
+  .ctrlbtns{margin-left:auto;display:flex;gap:8px}
+  .btn{background:var(--panel);color:var(--fg);border:1px solid var(--border);
+    border-radius:8px;padding:6px 12px;font-size:12.5px;cursor:pointer;font-weight:600}
+  .btn:hover{border-color:var(--accent)}
+  .btn-danger{color:var(--err);border-color:var(--err)}
+  .btn-danger:hover{background:var(--err);color:#fff}
   .bar{height:9px;background:var(--border);border-radius:6px;overflow:hidden}
   .bar > i{display:block;height:100%;width:0;background:var(--accent);
     border-radius:6px;transition:width .3s}
@@ -93,6 +99,11 @@
     <div class="prow">
       <span class="spin" id="spin"></span>
       <span class="ptitle" id="ptitle">Descargando…</span>
+      <span class="ctrlbtns" id="ctrlbtns">
+        <button id="btn-pause" class="btn">⏸ Pausar</button>
+        <button id="btn-resume" class="btn hidden">▶ Reanudar</button>
+        <button id="btn-cancel" class="btn btn-danger">■ Cancelar</button>
+      </span>
     </div>
     <div class="bar"><i id="barfill"></i></div>
     <div class="pstat" id="pstat"></div>
@@ -129,6 +140,16 @@ const RIESGOS = ['Rojo','Amarillo','Azul','Sin riesgo','Sin umbral'];
 function fmt(x,d=2){return x==null?'—':x.toLocaleString('es-CL',{maximumFractionDigits:d})}
 function getVar(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
 
+/* ---------- controles pausar/reanudar/cancelar ---------- */
+let CANCELADO_UI = false;
+function ctrl(cmd){
+  fetch('control?cmd='+cmd).catch(()=>{});
+  if(cmd==='cancel') CANCELADO_UI = true;
+}
+$('#btn-pause').onclick  = ()=>ctrl('pause');
+$('#btn-resume').onclick = ()=>ctrl('run');
+$('#btn-cancel').onclick = ()=>{ if(confirm('¿Cancelar la descarga? Se guarda lo bajado hasta ahora.')) ctrl('cancel'); };
+
 /* ---------- progreso en vivo ---------- */
 function renderProgreso(p){
   $('#proc').classList.remove('hidden');
@@ -137,10 +158,18 @@ function renderProgreso(p){
   $('#barfill').style.width = pct+'%';
   $('#meta').textContent = `${p.desde} → ${p.hasta}`;
   const listo = p.status==='listo';
-  $('#spin').classList.toggle('hidden', listo);
+  const pausado = p.control==='pausado';
+  $('#spin').classList.toggle('hidden', listo || pausado);
+  // botones: pausar/reanudar segun estado; ocultar todo al terminar
+  $('#ctrlbtns').classList.toggle('hidden', listo);
+  $('#btn-pause').classList.toggle('hidden', pausado);
+  $('#btn-resume').classList.toggle('hidden', !pausado);
   $('#ptitle').textContent = listo
-    ? `Descarga completa · ${done}/${total} lotes`
-    : `Descargando… ${done}/${total} lotes (${pct}%)`;
+    ? (p.cancelado?`Descarga cancelada · ${done}/${total} lotes`
+                  :`Descarga completa · ${done}/${total} lotes`)
+    : pausado
+      ? `⏸ En pausa · ${done}/${total} lotes (${pct}%)`
+      : (CANCELADO_UI?`Cancelando…`:`Descargando… ${done}/${total} lotes (${pct}%)`);
   $('#pstat').innerHTML =
     `<span><b>${p.registros||0}</b> registros</span>`+
     `<span><b>${p.errores||0}</b> errores</span>`+
